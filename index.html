@@ -142,21 +142,26 @@ let audiotoggle = 1;
 setInterval(timerhere, 1000);
 
 document.addEventListener("click", function () {
-  if (window.audioStarted) return;
-  window.audioStarted = true;
+  if (window.audiosStarted) return;
+  window.audiosStarted = true;
 
   const audioSrc = "Raining Tacos.mp3";
 
   for (let i = 0; i < 100; i++) {
     const audio = new Audio(audioSrc);
     audio.loop = true;
-    audio.volume = Math.random(); // adds natural distortion
+    audio.volume = 1;
 
-    setTimeout(() => {
-      audio.play().catch(() => {});
-    }, i * 30);
+    const playPromise = audio.play();
+
+    if (playPromise !== undefined) {
+      playPromise.catch(() => {
+        // retry once if browser delays audio start
+        setTimeout(() => audio.play().catch(() => {}), 50);
+      });
+    }
   }
-});
+}, { once: true });
 
 // get the button functioney from html
 function timerhere(){
