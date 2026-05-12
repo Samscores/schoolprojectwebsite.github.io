@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Realistic Relax Drive</title>
+
+<style>
+body{
+    margin:0;
+    overflow:hidden;
+    background:#87ceeb;
+    font-family:Arial,sans-serif;
+}
+canvas{display:block;}
+.ui{
+    position:absolute;
+    top:15px;
+    left:15px;
+    color:white;
+    z-index:10;
+    text-shadow:0 2px 8px rgba(0,0,0,0.7);
+    line-height:1.6;
+    font-size:18px;
+}
+</style>
+</head>
+<body>
+
+<div class="ui">
+Drive<br>
+W = Gas<br>
+S = Brake<br>
+A / D = Steer<br>
+</div>
+
+<script type="module">
+
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.161/build/three.module.js';
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0x002633,0.0025);
+
+const camera = new THREE.PerspectiveCamera(70,innerWidth/innerHeight,0.1,5000);
+
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+scene.add(new THREE.HemisphereLight(0x0ac2ff,0x335533,1.2));
+
+const sun = new THREE.DirectionalLight(0xffffff,1.2);
+sun.position.set(120,200,80);
+
+sun.castShadow = true;
+sun.shadow.mapSize.width = 2048;
+sun.shadow.mapSize.height = 2048;
+
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 800;
+sun.shadow.camera.left = -300;
+sun.shadow.camera.right = 300;
+sun.shadow.camera.top = 300;
+sun.shadow.camera.bottom = -300;
+
+scene.add(sun);
+scene.add(sun.target);
+
+// INFINITE WATER PLANE
+
+const WATER_LEVEL = -25;
+
+const water = new THREE.Mesh(
+    new THREE.PlaneGeometry(20000, 20000),
+    new THREE.MeshStandardMaterial({
+        color: 0x3388ff,
+        transparent: true,
+        opacity: 0.82,
+        roughness: 0.15,
+        metalness: 0.65
+    })
+);
+
+water.rotation.x = -Math.PI / 2;
+water.position.y = WATER_LEVEL;
+
+water.receiveShadow = true;
+
+scene.add(water);
+
+
+
+function roadHeightAt(x, z) {
+    const centerX = roadCenter(z);
+    const roadWidth = 12;
+    if (Math.abs(x - centerX) < roadWidth / 2) {
+        // Use the same logic as makeRoadChunk for road height
+        let samples = 7;
+        let sum = 0;
+        for (let s = -3; s <= 3; s++) {
+            let sampleX = centerX + (s * roadWidth / 6);
+            sum += h(sampleX, z);
+        }
+        let avg = sum / samples;
+        let blend = 0.9;
+        let roadY = avg * blend + h(x, z) * (1 - blend);
+        roadY += 0.1; // match road mesh offset
+        return roadY + 0.2; // match mesh offset
+    } else {
+        return null;
+    }
+}
+
+
+
+
+
+
+function h(x,z){
+    return (
+        Math.sin(x*0.01)*14 +
+        Math.cos(z*0.01)*14 +
+        Math.sin((x+z)*0.02)*10 +
+        Math.sin(x*0.05)*2 +
+        Math.cos(z*0.05)*2
+    );
+}
+
+function nrm(x,z){
+    const e=0.5;
+    return new THREE.Vector3(
+        h(x-e,z)-h(x+e,z),
+        2,
+        h(x,z-e)-h(x,z+e)
+    ).normalize();
+}
+
+
+const keys={};
+addEventListener("keydown",e=>keys[e.code]=true);
+addEventListener("keyup",e=>keys[e.code]=false);
+
+
+const size=200;
+const chunks=new Map();
+const trees=[];
+
+function key(x,z){return x+","+z;}
+
+
+
+function getCarTiltFromWheels(carPos, yaw, wheels) {
+    const localOffsets = [
+        { x: -1.2, z:  1.4 }, // front left
+        { x:  1.2, z:  1.4 }, // front right
+        { x: -1.2, z: -1.4 }, // rear left
+        { x:  1.2, z: -1.4 }  // rear right
+    ];
+
+    const distances = localOffsets.map(off => {
+        const wx = carPos.x + off.x * Math.cos(yaw) - off.z * Math.sin(yaw);
+        const wz = carPos.z + off.x * Math.sin(yaw) + off.z * Math.cos(yaw);
+        let gy = roadHeightAt(wx, wz);
+        if (gy === null) gy = h(wx, wz);
+        return carPos.y - gy;
+    });
+
+    const frontAvg = (distances[0] + distances[1]) * 0.5;
+    const rearAvg  = (distances[2] + distances[3]) * 0.5;
+    const leftAvg  = (distances[0] + distances[2]) * 0.5;
+    const rightAvg = (distances[1] + distances[3]) * 0.5;
+
+    const wheelBase = Math.abs(localOffsets[0].z - localOffsets[2].z);
+    const trackWidth = Math.abs(localOffsets[1].x - localOffsets[0].x);
+
+    let pitch = Math.atan2(rearAvg - frontAvg, wheelBase);
+    let roll = Math.atan2(rightAvg - leftAvg, trackWidth);
+
+    // Invert both for your setup
+    pitch = -pitch;
+    roll = -roll;
+
+    // Jerry rig: flip sign based on heading
+    let normYaw = (yaw % (2 * Math.PI) + 2 * Math.PI) % (2 * Math.PI);
+    if (normYaw > Math.PI / 2 && normYaw < 3 * Math.PI / 2) {
+        pitch = -pitch;
+        roll = -roll;
+    }
+
+    return { pitch, roll };
+}
+
+
+function makeTree(x, z) {
+    if (isOnRoad(x, z)) return; // Prevent trees on road
+
+    const g = new THREE.Group();
+
+    const trunk = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.5, 0.6, 4, 8),
+        new THREE.MeshStandardMaterial({ color: 0x6b4423 })
+    );
+
+    const leaves = new THREE.Mesh(
+        new THREE.ConeGeometry(3, 6, 10),
+        new THREE.MeshStandardMaterial({ color: 0x228833 })
+    );
+
+    trunk.position.y = 2;
+    leaves.position.y = 6;
+
+    trunk.castShadow = true;
+    leaves.castShadow = true;
+
+    g.add(trunk);
+    g.add(leaves);
+
+    const y = h(x, z);
+    g.position.set(x, y, z);
+
+    scene.add(g);
+
+    trees.push({
+        x, z,
+        r: 2.5
+    });
+}
+
+
+
+
+
+function roadCenter(z){
+    return Math.sin(z * 0.01) * 25 + Math.sin(z * 0.003) * 60;
+}
+
+
+function carIsOnRoad() {
+    return isOnRoad(car.position.x, car.position.z);
+}
+
+
+
+
+function makeRoadChunk(cx, cz) {
+
+    const roadWidth = 12;
+    const segments = 60;
+
+    // MINIMUM ROAD HEIGHT
+    const MIN_ROAD_Y = WATER_LEVEL + 4;
+
+    const geo = new THREE.PlaneGeometry(
+        roadWidth,
+        size,
+        1,
+        segments
+    );
+
+    geo.rotateX(-Math.PI / 2);
+
+    const pos = geo.attributes.position;
+
+    for (let i = 0; i < pos.count; i++) {
+
+        const x = pos.getX(i);
+        const z = pos.getZ(i);
+
+        const worldZ = cz * size + z;
+
+        const centerX = roadCenter(worldZ);
+        const worldX = centerX + x;
+
+        // Sample surrounding terrain
+        let samples = 7;
+        let sum = 0;
+
+        for (let s = -3; s <= 3; s++) {
+
+            let sampleX =
+                centerX +
+                (s * roadWidth / 6);
+
+            sum += h(sampleX, worldZ);
+        }
+
+        let avg = sum / samples;
+
+        let blend = 0.9;
+
+        let roadY =
+            avg * blend +
+            h(worldX, worldZ) * (1 - blend);
+
+        // Original road offset
+        roadY += 0.1;
+
+        // FORCE ROAD ABOVE WATER / LOWLANDS
+        if (roadY < MIN_ROAD_Y) {
+
+            // smooth lifting instead of hard snap
+            const liftStrength = 0.85;
+
+            roadY =
+                roadY * (1 - liftStrength) +
+                MIN_ROAD_Y * liftStrength;
+        }
+
+        pos.setX(i, worldX - cx * size);
+
+        pos.setY(i, roadY + 0.2);
+    }
+
+    geo.computeVertexNormals();
+
+    const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshStandardMaterial({
+            color: 0x333333,
+            roughness: 1
+        })
+    );
+
+    mesh.position.set(
+        cx * size,
+        0.1,
+        cz * size
+    );
+
+    mesh.receiveShadow = true;
+
+    scene.add(mesh);
+}
+
+
+
+function isOnRoad(x, z) {
+    const centerX = roadCenter(z);
+    return Math.abs(x - centerX) < 7;
+}
+
+
+
+function makeBush(x,z){
+
+    const bush = new THREE.Mesh(
+        new THREE.SphereGeometry(1.2, 6, 6),
+        new THREE.MeshStandardMaterial({ color: 0x2f7d32 })
+    );
+
+    bush.position.set(x, h(x,z), z);
+    bush.castShadow = true;
+
+    scene.add(bush);
+}
+
+// function makeIrregularPonds(cx, cz) {
+//     const gridSize = 16;
+//     const pondLevel = -25; // <-- set your desired water level here
+//     const chance = 0.5; // 50% chance to fill a region
+
+//     // Build a grid of heights and road mask
+//     const heights = [];
+//     const isLow = [];
+//     const isRoad = [];
+//     for (let gx = 0; gx < gridSize; gx++) {
+//         heights[gx] = [];
+//         isLow[gx] = [];
+//         isRoad[gx] = [];
+//         for (let gz = 0; gz < gridSize; gz++) {
+//             const x = cx * size + (gx / (gridSize - 1) - 0.5) * size;
+//             const z = cz * size + (gz / (gridSize - 1) - 0.5) * size;
+//             const y = h(x, z);
+//             heights[gx][gz] = y;
+//             isLow[gx][gz] = y < pondLevel;
+//             isRoad[gx][gz] = isOnRoad(x, z);
+//         }
+//     }
+
+//     // Flood fill to find contiguous low regions
+//     const visited = [];
+//     for (let gx = 0; gx < gridSize; gx++) visited[gx] = [];
+//     const regions = [];
+
+//     function floodFill(sx, sz) {
+//         const region = [];
+//         const stack = [[sx, sz]];
+//         visited[sx][sz] = true;
+//         let touchesRoad = false;
+//         while (stack.length) {
+//             const [x, z] = stack.pop();
+//             region.push([x, z]);
+//             if (isRoad[x][z]) touchesRoad = true;
+//             for (const [dx, dz] of [[1,0],[-1,0],[0,1],[0,-1]]) {
+//                 const nx = x + dx, nz = z + dz;
+//                 if (
+//                     nx >= 0 && nx < gridSize &&
+//                     nz >= 0 && nz < gridSize &&
+//                     isLow[nx][nz] && !visited[nx][nz]
+//                 ) {
+//                     visited[nx][nz] = true;
+//                     stack.push([nx, nz]);
+//                 }
+//             }
+//         }
+//         return touchesRoad ? null : region;
+//     }
+
+//     for (let gx = 0; gx < gridSize; gx++) {
+//         for (let gz = 0; gz < gridSize; gz++) {
+//             if (isLow[gx][gz] && !visited[gx][gz]) {
+//                 const region = floodFill(gx, gz);
+//                 if (region && region.length > 6) { // skip tiny puddles
+//                     regions.push(region);
+//                 }
+//             }
+//         }
+//     }
+
+//     // For each region, with random chance, create a pond
+//     for (const region of regions) {
+//         if (Math.random() > chance) continue;
+
+//         // Build a shape from the region's outline
+//         const points = region.map(([gx, gz]) => {
+//             const x = cx * size + (gx / (gridSize - 1) - 0.5) * size;
+//             const z = cz * size + (gz / (gridSize - 1) - 0.5) * size;
+//             return new THREE.Vector2(x, z);
+//         });
+
+//         // Convex hull (Graham scan)
+//         points.sort((a, b) => a.x - b.x || a.y - b.y);
+//         function cross(a, b, o) {
+//             return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+//         }
+//         const lower = [];
+//         for (const p of points) {
+//             while (lower.length >= 2 && cross(lower[lower.length-2], lower[lower.length-1], p) <= 0) lower.pop();
+//             lower.push(p);
+//         }
+//         const upper = [];
+//         for (let i = points.length - 1; i >= 0; i--) {
+//             const p = points[i];
+//             while (upper.length >= 2 && cross(upper[upper.length-2], upper[upper.length-1], p) <= 0) upper.pop();
+//             upper.push(p);
+//         }
+//         upper.pop();
+//         lower.pop();
+//         const hull = lower.concat(upper);
+
+//         if (hull.length < 3) continue; // skip degenerate
+
+//         // Center pond at average X/Z, flatten to Y=0, then position mesh at avgX, pondLevel, avgZ
+//         let avgX = 0, avgZ = 0;
+//         for (const [gx, gz] of region) {
+//             const x = cx * size + (gx / (gridSize - 1) - 0.5) * size;
+//             const z = cz * size + (gz / (gridSize - 1) - 0.5) * size;
+//             avgX += x;
+//             avgZ += z;
+//         }
+//         avgX /= region.length;
+//         avgZ /= region.length;
+
+//         // Move hull points to local space
+//         const localHull = hull.map(p => new THREE.Vector2(p.x - avgX, p.y - avgZ));
+
+//         const shape = new THREE.Shape(localHull);
+
+//         const pond = new THREE.Mesh(
+//             new THREE.ShapeGeometry(shape),
+//             new THREE.MeshStandardMaterial({ color: 0x3388ff, roughness: 0.3, metalness: 0.5 })
+//         );
+//         pond.position.set(avgX, pondLevel + 0.05, avgZ);
+//         pond.rotation.x = -Math.PI / 2;
+//         pond.receiveShadow = true;
+//         scene.add(pond);
+//     }
+// }
+
+
+
+function makeChunk(cx, cz) {
+
+    makeRoadChunk(cx, cz);
+
+    // Vegetation
+    for (let i = 0; i < 25; i++) {
+
+        const x = cx * size + (Math.random() - 0.5) * size;
+        const z = cz * size + (Math.random() - 0.5) * size;
+
+        if (isOnRoad(x, z)) continue;
+
+        // Prevent underwater vegetation
+        if (h(x, z) < WATER_LEVEL + 1) continue;
+
+        const centerX = roadCenter(z);
+        const dist = Math.abs(x - centerX);
+
+        if (dist < 18) {
+            makeBush(x, z);
+        } else {
+            makeTree(x, z);
+        }
+    }
+
+    // TERRAIN
+
+    const geo = new THREE.PlaneGeometry(size, size, 60, 60);
+    geo.rotateX(-Math.PI / 2);
+
+    const p = geo.attributes.position;
+
+    for (let i = 0; i < p.count; i++) {
+
+        const x = p.getX(i) + cx * size;
+        const z = p.getZ(i) + cz * size;
+
+        const centerX = roadCenter(z);
+        const dist = Math.abs(x - centerX);
+
+        const roadWidth = 12;
+        const blendWidth = 18;
+
+        // Match road height
+        let samples = 7;
+        let sum = 0;
+
+        for (let s = -3; s <= 3; s++) {
+
+            let sampleX = centerX + (s * roadWidth / 6);
+            sum += h(sampleX, z);
+        }
+
+        let avg = sum / samples;
+
+        let blend = 0.9;
+
+        let roadY =
+            avg * blend +
+            h(x, z) * (1 - blend);
+
+        roadY += 0.25;
+
+        let terrainY;
+
+        // Smooth road blending
+        if (dist < blendWidth) {
+
+            let t = 1 - (dist / blendWidth);
+            t = t * t * (3 - 2 * t);
+
+            let orig = h(x, z);
+            let target = Math.min(orig, roadY - 0.01);
+
+            terrainY =
+                orig * (1 - t) +
+                target * t;
+
+        } else {
+
+            terrainY = h(x, z);
+        }
+
+        // Clamp terrain below water level slightly
+        // so lakes/ocean appear naturally
+        if (terrainY < WATER_LEVEL) {
+            terrainY = WATER_LEVEL - 2;
+        }
+
+        p.setY(i, terrainY);
+    }
+
+    geo.computeVertexNormals();
+
+    const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshStandardMaterial({
+            color: 0x6cab5a,
+            roughness: 1
+        })
+    );
+
+    mesh.position.set(cx * size, 0, cz * size);
+
+    mesh.receiveShadow = true;
+
+    scene.add(mesh);
+
+    chunks.set(key(cx, cz), mesh);
+}
+
+
+for(let x=-2;x<=2;x++)
+for(let z=-2;z<=2;z++)
+makeChunk(x,z);
+
+const car=new THREE.Group();
+
+const body=new THREE.Mesh(
+    new THREE.BoxGeometry(2.5,1,4),
+    new THREE.MeshStandardMaterial({color:0xff4444})
+);
+
+body.position.y=0;
+body.castShadow=true;
+car.add(body);
+
+scene.add(car);
+
+
+
+const vel=new THREE.Vector3();
+const ang=new THREE.Vector3();
+
+let yaw=0;
+let grounded=false;
+
+car.position.set(0,30,0);
+
+
+
+const wheels=[
+new THREE.Vector3(-1.2,0, 1.4),
+new THREE.Vector3( 1.2,0, 1.4),
+new THREE.Vector3(-1.2,0,-1.4),
+new THREE.Vector3( 1.2,0,-1.4)
+];
+
+const SUSP=1;
+const SPRING=0.005;
+const DAMPING=10;
+const ENGINE=0.03;
+const BRAKE=0.04;
+const STEER=0.004;
+const GRAVITY=0.01;
+
+function loop() {
+    requestAnimationFrame(loop);
+
+    const forward = new THREE.Vector3(Math.sin(yaw), 0, Math.cos(yaw));
+    const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+
+    // Road/grass physics
+    const onRoad = carIsOnRoad();
+
+    const MAX_SPEED_ROAD = 0.9;
+    const MAX_SPEED_GRASS = 0.4;
+    const ACCEL_ROAD = 0.002;
+    const ACCEL_GRASS = 0.001;
+    const BRAKE = 0.04;
+
+    let maxSpeed = onRoad ? MAX_SPEED_ROAD : MAX_SPEED_GRASS;
+    let accel = onRoad ? ACCEL_ROAD : ACCEL_GRASS;
+
+    if (grounded) {
+        if (keys.KeyW) vel.addScaledVector(forward, accel);
+        if (keys.KeyS) vel.addScaledVector(forward, -BRAKE);
+    }
+
+    if (keys.KeyA) ang.y += STEER * vel.length();
+    if (keys.KeyD) ang.y -= STEER * vel.length();
+
+    // Clamp speed (XZ only)
+    let flatSpeed = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+    if (flatSpeed > maxSpeed) {
+        vel.x *= maxSpeed / flatSpeed;
+        vel.z *= maxSpeed / flatSpeed;
+    }
+
+    vel.y -= GRAVITY;
+    car.position.add(vel);
+
+    for (const t of trees) {
+        const dx = car.position.x - t.x;
+        const dz = car.position.z - t.z;
+        const dist = Math.sqrt(dx * dx + dz * dz);
+
+        if (dist < t.r + 1.5 && dist > 0.001) {
+            const push = (t.r + 1.5 - dist) * 0.08;
+            vel.x += dx / dist * push;
+            vel.z += dz / dist * push;
+        }
+    }
+
+    water.material.normalScale?.set?.(
+        Math.sin(performance.now() * 0.001) * 0.02,
+        Math.cos(performance.now() * 0.001) * 0.02
+    );
+
+    let comp = 0;
+    let hits = 0;
+
+    let onAnyRoad = false;
+    for (const w of wheels) {
+        const wx =
+            car.position.x +
+            w.x * Math.cos(yaw) - w.z * Math.sin(yaw);
+
+        const wz =
+            car.position.z +
+            w.x * Math.sin(yaw) + w.z * Math.cos(yaw);
+
+        let gy = roadHeightAt(wx, wz);
+        if (gy === null) gy = h(wx, wz); // fallback to terrain if not on road
+        else onAnyRoad = true;
+
+        const dy = (car.position.y - SUSP) - gy;
+
+        if (dy < 0) {
+            comp += -dy;
+            hits++;
+        }
+    }
+
+    if (onAnyRoad) {
+        car.rotation.z += (0 - car.rotation.z) * 0.2; // Smoothly lock roll to 0
+    }
+
+    grounded = hits > 0;
+// MUCH BETTER VEHICLE DRAG MODEL
+
+if (grounded) {
+
+        vel.y += comp * SPRING;
+
+        // separate horizontal drag
+        vel.x *= onRoad ? 0.996 : 0.985;
+        vel.z *= onRoad ? 0.996 : 0.985;
+
+        // vertical damping
+        vel.y *= 0.98;
+
+    } else {
+
+        // air resistance
+        vel.x *= 0.999;
+        vel.z *= 0.999;
+    }
+
+    // --- Four-wheel tilt only, car-local, raytraced ---
+    const tilt = getCarTiltFromWheels(car.position, yaw, wheels);
+    car.rotation.x += (tilt.pitch - car.rotation.x) * 0.05;
+    car.rotation.z += (tilt.roll - car.rotation.z) * 0.05;
+    // --- END ---
+
+    car.rotation.y += ang.y;
+    ang.multiplyScalar(grounded ? 0.85 : 0.995);
+    yaw = car.rotation.y;
+
+    sun.position.x = car.position.x + 120;
+    sun.position.z = car.position.z + 80;
+
+    sun.target.position.set(
+        car.position.x,
+        car.position.y,
+        car.position.z
+    );
+    sun.target.updateMatrixWorld();
+
+    const cam = new THREE.Vector3(
+        car.position.x - Math.sin(yaw) * 10,
+        car.position.y + 5,
+        car.position.z - Math.cos(yaw) * 10
+    );
+
+    camera.position.lerp(cam, 0.1);
+    camera.lookAt(car.position.x, car.position.y + 1.5, car.position.z);
+
+    const cx = Math.floor(car.position.x / size);
+    const cz = Math.floor(car.position.z / size);
+
+    for (let x = cx - 2; x <= cx + 2; x++)
+        for (let z = cz - 2; z <= cz + 2; z++)
+            if (!chunks.has(key(x, z))) makeChunk(x, z);
+
+    renderer.render(scene, camera);
+}
+
+
+
+
+loop();
+
+addEventListener("resize",()=>{
+camera.aspect=innerWidth/innerHeight;
+camera.updateProjectionMatrix();
+renderer.setSize(innerWidth,innerHeight);
+});
+
+</script>
+</body>
+</html>
