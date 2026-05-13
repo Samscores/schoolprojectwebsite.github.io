@@ -288,7 +288,43 @@ function collide(pos){
     return false;
 }
 
+const keys = {
+    w: false,
+    a: false,
+    s: false,
+    d: false,
+    q: false,
+    e: false,
+    space: false
+};
 
+window.addEventListener("keydown", (e) => {
+
+    const k = e.key.toLowerCase();
+
+    if (k in keys) {
+        keys[k] = true;
+    }
+
+    // Spacebar
+    if (e.code === "Space") {
+        keys.space = true;
+    }
+});
+
+window.addEventListener("keyup", (e) => {
+
+    const k = e.key.toLowerCase();
+
+    if (k in keys) {
+        keys[k] = false;
+    }
+
+    // Spacebar
+    if (e.code === "Space") {
+        keys.space = false;
+    }
+});
 
 function animate(){
 
@@ -322,6 +358,24 @@ function animate(){
 
         pitch = -dz(gp.axes[3]);
         roll = dz(gp.axes[2]);
+    }
+
+
+    // WASD fallback / support
+    // 75% controller authority
+
+    const keyboardScale = 0.75;
+
+    if(keys.s) pitch = -keyboardScale;
+    if(keys.w) pitch = keyboardScale;
+
+    if(keys.q) roll = -keyboardScale;
+    if(keys.e) roll = keyboardScale;
+
+    if(keys.a) yaw = -keyboardScale;
+    if(keys.d) yaw = keyboardScale;
+    if(keys.space){
+        throttle = 1.0;
     }
 
 
