@@ -79,6 +79,7 @@ Drift a brick<br>
 W = Gas<br>
 S = Brake<br>
 A / D = Steer<br>
+Mileage: <span id="mileage">0</span> m<br>
 </div>
 
 
@@ -193,10 +194,6 @@ function roadHeightAt(x, z) {
         return null;
     }
 }
-
-
-
-
 
 
 function h(x,z){
@@ -794,6 +791,8 @@ let yaw=0;
 let grounded=false;
 
 car.position.set(0,30,0);
+const spawnPos = new THREE.Vector3(car.position.x, car.position.y, car.position.z);
+let mileage = 0;
 
 
 
@@ -947,6 +946,14 @@ if (grounded) {
 
     const cx = Math.floor(car.position.x / size);
     const cz = Math.floor(car.position.z / size);
+
+    const dx = car.position.x - spawnPos.x;
+    const dz = car.position.z - spawnPos.z;
+
+    // straight-line distance from spawn
+    mileage = Math.sqrt(dx * dx + dz * dz) * 0.0008;
+
+    document.getElementById("mileage").textContent = mileage.toFixed(1);
 
     // LOAD CHUNKS
 
